@@ -21,6 +21,7 @@ from fabricpc.core.initializers import (
     XavierInitializer,
     KaimingInitializer,
 )
+from fabricpc.graph_initialization import FeedforwardStateInit
 from fabricpc.core.positional import precompute_freqs_cis, apply_rotary_emb
 from fabricpc.utils.helpers import layernorm
 
@@ -33,8 +34,9 @@ from fabricpc.core.activations import (
     IdentityActivation,
     SoftmaxActivation,
 )
-from fabricpc.core.energy import KLDivergenceEnergy, GaussianEnergy
+from fabricpc.core.energy import CrossEntropyEnergy, GaussianEnergy
 from fabricpc.core.inference import InferenceBase
+from fabricpc.core.mupc import MuPCConfig
 
 # ==============================================================================
 # EMBEDDING NODE
@@ -169,7 +171,9 @@ class MhaResidualNode(NodeBase):
     def get_slots():
         return {
             "in": SlotSpec("in", False),
-            "mask": SlotSpec("mask", False, is_variance_scalable=False),
+            "skip": SlotSpec(
+                "skip", False, is_variance_scalable=False, is_skip_connection=True
+            ),
         }
 
     @staticmethod
@@ -199,8 +203,8 @@ class MhaResidualNode(NodeBase):
     @staticmethod
     def forward(params, inputs, state, node_info):
         x = inputs[next(k for k in inputs if k.endswith(":in"))]
-        mask_key = next((k for k in inputs if k.endswith(":mask")), None)
-        external_mask = inputs[mask_key] if mask_key else None
+        skip_key = next((k for k in inputs if k.endswith(":skip")), None)
+        skip = inputs[skip_key] if skip_key else x
 
         cfg = node_info.node_config
         B, L, D = x.shape
@@ -233,14 +237,11 @@ class MhaResidualNode(NodeBase):
             causal_mask = jnp.tril(jnp.ones((L, L)))
             scores = jnp.where(causal_mask == 0, -1e9, scores)
 
-        if external_mask is not None:
-            scores = jnp.where(external_mask == 0, -1e9, scores)
-
         attn = jax.nn.softmax(scores, axis=-1)
         mha = jnp.matmul(attn, V).transpose(0, 2, 1, 3).reshape(B, L, D)
         mha = proj(mha, "W_o", "b_o")
 
-        z_mu = x + mha
+        z_mu = skip + mha
         error = state.z_latent - z_mu
 
         state = state._replace(z_mu=z_mu, error=error)
@@ -378,7 +379,7 @@ class Mlp2ResidualNode(NodeBase):
 
 
 class VocabProjectionNode(NodeBase):
-    DEFAULT_ENERGY = KLDivergenceEnergy
+    DEFAULT_ENERGY = CrossEntropyEnergy
     DEFAULT_ACTIVATION = SoftmaxActivation
 
     def __init__(
@@ -401,7 +402,7 @@ class VocabProjectionNode(NodeBase):
             activation=activation or SoftmaxActivation(),
             weight_init=weight_init or XavierInitializer(),
             latent_init=latent_init or NormalInitializer(),
-            energy=energy or KLDivergenceEnergy(),
+            energy=energy or CrossEntropyEnergy(),
             **kwargs,
         )
 
@@ -446,8 +447,19 @@ def create_deep_transformer(
 ):
     """
     Creates a deep transformer graph using the new class-based builder API.
+
+    Note on initialization: the embedding and output-projection nodes
+    deliberately OVERRIDE their class-default initializers. The embedding uses
+    unit-normal (std=1.0) instead of the node default std=0.02, and the output
+    projection uses Normal(std=sqrt(1/embed_dim)) instead of the node default
+    Xavier. Both choices keep activations and logits at O(1) variance given that
+    muPC scaling is disabled on these two nodes (embedding = discrete lookup,
+    output = include_output=False). Changing these without accounting for the
+    muPC interaction can cause embedding variance collapse or softmax saturation.
     """
     if weight_init is None:
+        # Transformer block weights default to std=0.02 (GPT-style); embedding
+        # and output projection set their own init below (see those nodes)
         w_init_obj = NormalInitializer(std=0.02)
     else:
         init_type = weight_init.get("type", "normal")
@@ -466,12 +478,18 @@ def create_deep_transformer(
     )
     nodes.append(input_node)
 
+    # Embedding init: unit-normal (std=1.0), NOT the small std=0.02 used for
+    # dense layers. EmbeddingNode is a table lookup with muPC scaling disabled
+    # (discrete token indices, not a continuous signal). A Linear+one-hot+muPC
+    # path would collapse embedding variance to ~1/vocab_size because muPC
+    # assumes dense input with fan_in active features. Unit-normal keeps each
+    # token's embedding at O(1) variance going into the first attention block.
     embed_node = EmbeddingNode(
         name="embed",
         shape=(seq_len, embed_dim),
         vocab_size=vocab_size,
         embed_dim=embed_dim,
-        weight_init=w_init_obj,
+        weight_init=NormalInitializer(std=1.0),
     )
     nodes.append(embed_node)
     edges.append(Edge(source=input_node, target=embed_node.slot("in")))
@@ -487,7 +505,11 @@ def create_deep_transformer(
             weight_init=w_init_obj,
         )
         nodes.append(mha)
+        # previous_residual feeds two edges: "in" is the attention-branch input
+        # and is muPC-scaled; "skip" is the residual bypass, unscaled and
+        # counted toward residual depth L.
         edges.append(Edge(source=previous_residual, target=mha.slot("in")))
+        edges.append(Edge(source=previous_residual, target=mha.slot("skip")))
 
         mlp1 = LnMlp1Node(
             name=f"L{i}_mlp1",
@@ -513,12 +535,19 @@ def create_deep_transformer(
 
         previous_residual = mlp2
 
+    # Output projection init: std = sqrt(1/embed_dim). This keeps pre-softmax
+    # logits at O(1) variance regardless of model width — each logit is a dot
+    # product over embed_dim features, so scaling by 1/sqrt(embed_dim) prevents
+    # logit magnitudes from growing with width. Large initial logits would
+    # saturate the softmax and produce near-zero CE gradients at the start of
+    # training. muPC is disabled on the output (include_output=False), so this
+    # explicit init is what controls output-layer variance.
     logits = VocabProjectionNode(
         name="logits",
         shape=(seq_len, vocab_size),
         vocab_size=vocab_size,
         embed_dim=embed_dim,
-        weight_init=w_init_obj,
+        weight_init=NormalInitializer(std=float(jnp.sqrt(1.0 / embed_dim))),
     )
     nodes.append(logits)
     edges.append(Edge(source=previous_residual, target=logits.slot("in")))
@@ -528,4 +557,6 @@ def create_deep_transformer(
         edges=edges,
         task_map=TaskMap(x=input_node, y=logits),
         inference=inference,
+        scaling=MuPCConfig(include_output=False),
+        graph_state_initializer=FeedforwardStateInit(),
     )
