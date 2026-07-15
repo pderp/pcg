@@ -280,7 +280,7 @@ class StorkeyHopfield(NodeBase):
         inputs: Dict[str, jnp.ndarray],
         state: NodeState,
         node_info: NodeInfo,
-    ) -> Tuple[jax.Array, NodeState]:
+    ) -> NodeState:
         """
         Forward pass: compute z_mu from probe, then combined energy.
 
@@ -329,7 +329,7 @@ class StorkeyHopfield(NodeBase):
         error = state.z_latent - z_mu
 
         # Update state
-        state = state._replace(pre_activation=pre_activation, z_mu=z_mu, error=error)
+        state = state._replace(z_mu=z_mu, error=error)
 
         # Standard PC energy via energy_functional
         node_class = node_info.node_class
@@ -338,5 +338,4 @@ class StorkeyHopfield(NodeBase):
         # Add Hopfield attractor energy scaled by strength
         state = StorkeyHopfield.accumulate_hopfield_energy(state, W, strength)
 
-        total_energy = jnp.sum(state.energy)
-        return total_energy, state
+        return state

@@ -101,7 +101,7 @@ class SkipConnection(NodeBase):
         inputs: Dict[str, jnp.ndarray],
         state: NodeState,
         node_info: NodeInfo,
-    ) -> Tuple[jax.Array, NodeState]:
+    ) -> NodeState:
         """Sum all inputs and pass through (no transformation)."""
         pre_activation = None
         for edge_key, x in inputs.items():
@@ -113,12 +113,10 @@ class SkipConnection(NodeBase):
         z_mu = pre_activation  # no activation function applied: z_mu = pre_activation
         error = state.z_latent - z_mu
         state = state._replace(
-            pre_activation=pre_activation,
             z_mu=z_mu,
             error=error,
         )
 
         node_class = node_info.node_class
         state = node_class.energy_functional(state, node_info)
-        total_energy = jnp.sum(state.energy)
-        return total_energy, state
+        return state

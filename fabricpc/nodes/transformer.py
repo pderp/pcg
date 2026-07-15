@@ -297,7 +297,7 @@ class TransformerBlock(NodeBase):
         inputs: Dict[str, jnp.ndarray],
         state: NodeState,
         node_info: NodeInfo,
-    ) -> tuple[jax.Array, NodeState]:
+    ) -> NodeState:
         """Forward pass for the Transformer Block."""
         config = node_info.node_config
         num_heads = config.get("num_heads", 8)
@@ -383,12 +383,10 @@ class TransformerBlock(NodeBase):
         # Residual connection 2
         z_mu = inv_sqrt2 * (x_res1 + ff_output)
 
-        pre_activation = z_mu
         error = state.z_latent - z_mu
 
         state = state._replace(
             z_mu=z_mu,
-            pre_activation=pre_activation,
             error=error,
         )
 
@@ -396,8 +394,7 @@ class TransformerBlock(NodeBase):
         node_class = node_info.node_class
         state = node_class.energy_functional(state, node_info)
 
-        total_energy = jnp.sum(state.energy)
-        return total_energy, state
+        return state
 
     @staticmethod
     def forward_and_weight_grads(
@@ -409,9 +406,16 @@ class TransformerBlock(NodeBase):
         node_class = node_info.node_class
 
         # Pure autodiff (inputs already scaled by callsite)
+        def energy_fn(p):
+            new_s = node_class.forward(p, inputs, state, node_info)
+            # Sum the per-sample energy over the batch dimension to the
+            # scalar differentiated by autodiff
+            total_energy = jnp.sum(new_s.energy)
+            return total_energy, new_s
+
         (total_energy, new_state), params_grad = jax.value_and_grad(
-            node_class.forward, argnums=0, has_aux=True
-        )(params, inputs, state, node_info)
+            energy_fn, has_aux=True
+        )(params)
 
         # LayerNorm compensation: LN(a*x) = LN(x) absorbs muPC forward
         # scaling, so dE/dW is independent of a — making weight gradients
@@ -499,7 +503,6 @@ class TransformerBlock(NodeBase):
         )
 
         # Output projection
-        pre_activation = jnp.matmul(attn_output, W_o) + b_o
-        projection = activation_fn(pre_activation)
+        projection = activation_fn(jnp.matmul(attn_output, W_o) + b_o)
 
         return projection

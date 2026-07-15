@@ -329,7 +329,7 @@ class NodeBase(ABC):
         inputs: Dict[str, jnp.ndarray],  # keyed on EdgeInfo.key -> inputs data
         state: NodeState,
         node_info: NodeInfo,
-    ) -> tuple[jax.Array, NodeState]:
+    ) -> NodeState:
         """
         Predict this node's latent state and report the resulting energy.
 
@@ -342,26 +342,23 @@ class NodeBase(ABC):
         How the prediction is produced is intentionally unconstrained: Linear
         does a matmul, IdentityNode sums its inputs, TransformerBlock runs an
         attention pipeline, StorkeyHopfield blends a probe with a learned weight
-        matrix. Every implementation must, however, perform these six steps in
+        matrix. Every implementation must, however, perform these five steps in
         order:
 
         1. Predict ``z_mu``: this node's prediction of its own latent, with shape
            ``(batch,) + node_info.shape``.
-        2. Record ``pre_activation``: the value before the activation function.
-           If the node applies no activation, set ``pre_activation = z_mu``.
-        3. Compute the error: ``error = state.z_latent - z_mu``. The energy
+        2. Compute the error: ``error = state.z_latent - z_mu``. The energy
            functionals assume this sign (latent minus prediction).
-        4. Write the fields back:
-           ``state = state._replace(z_mu=..., pre_activation=..., error=...)``.
+        3. Write the fields back:
+           ``state = state._replace(z_mu=..., error=...)``.
            NodeState is a fixed-schema NamedTuple; no other fields may be added.
-        5. Populate energy:
+        4. Populate energy:
            ``state = node_info.node_class.energy_functional(state, node_info)``.
            This sets ``state.energy`` from ``energy(z_latent, z_mu)``, so ``z_mu``
            must already be set. Additional energy terms (e.g. the Hopfield
            attractor term in StorkeyHopfield) are added by replacing
            ``state.energy`` after this call.
-        6. Return ``jnp.sum(state.energy), state``: the scalar total energy
-           first, the updated state second.
+        5. Return ``state``: the updated state
 
         muPC scaling is NOT applied here; the inference/learning callsite applies
         it. Do not scale inputs or gradients inside this method.
@@ -377,10 +374,7 @@ class NodeBase(ABC):
             node_info: NodeInfo object (contains activation, energy, etc.)
 
         Returns:
-            Tuple of (total_energy, NodeState)
-                - total_energy: scalar energy value for this node
-                - NodeState: updated node state (z_mu, pre_activation, error,
-                  energy)
+            NodeState: updated node state (z_mu, error, energy)
         """
         pass
 
@@ -430,6 +424,20 @@ class NodeBase(ABC):
         (dE/dz_latent).
         Called in the inference phase of predictive coding.
 
+        Contract:
+        1. In-degree-0 nodes are handled specially, without calling
+           ``forward()``: z_mu <- z_latent (cast to z_mu's dtype); error and
+           all gradients are zero; energy is E(z_latent, z_latent) from the
+           node's energy functional.
+        2. Every node with in-degree > 0 goes through ``node_class.forward()``.
+           For unclamped out-degree-0 nodes the forward's z_mu is kept and
+           written into z_latent (outputs track predictions in evaluation
+           mode); error, energy, and all gradients are zeroed.
+        3. The per-sample ``state.energy`` (shape (batch,)) is summed over
+           the batch dimension to a scalar.
+        4. ``jax.value_and_grad`` differentiates that scalar w.r.t. the
+           input tensors and z_latent.
+
         Override this method to implement explicit (non-autodiff) gradient
         computation. When overriding, use ``energy.grad_latent()`` and
         ``activation.derivative()`` (or ``activation.jacobian()``) for
@@ -452,8 +460,8 @@ class NodeBase(ABC):
 
         Returns:
             Tuple of (NodeState, input_grads, self_grad):
-                - NodeState: updated state (z_mu, pre_activation, error,
-                  energy). ``latent_grad`` is *not* modified here.
+                - NodeState: updated state (z_mu, error, energy).
+                  ``latent_grad`` is *not* modified here.
                 - input_grads: dict of gradients w.r.t. each input edge
                   (dE/d_input per edge), unscaled.
                 - self_grad: dE/dz_latent contribution from this node,
@@ -472,9 +480,8 @@ class NodeBase(ABC):
             new_state = state._replace(
                 z_mu=state.z_latent.astype(state.z_mu.dtype),
                 error=jnp.zeros_like(state.error),
-                pre_activation=jnp.zeros_like(state.pre_activation),
             )
-            # Update the state's energy; will be zero since z_mu = z_latent
+            # Energy from the node's energy functional evaluated at z_mu = z_latent
             new_state = node_class.energy_functional(new_state, node_info)
             # No inputs, no contribution to latent_grad of self or upstream
             input_grads = {
@@ -486,9 +493,7 @@ class NodeBase(ABC):
             # No post-synaptic targets and no clamped data!
             # This happens for output nodes when the model is run in inference/evaluation mode (not training)
             # Compute its projection (z_mu) but no gradient since it doesn't contribute to any error.
-            total_energy, new_state = node_class.forward(
-                params, inputs, state, node_info
-            )
+            new_state = node_class.forward(params, inputs, state, node_info)
             # Update keeping the projection, but zero error.
             new_state = new_state._replace(
                 z_latent=new_state.z_mu,
@@ -506,9 +511,10 @@ class NodeBase(ABC):
             # Extract z_latent as a separate differentiable argument via closure.
             def energy_fn(input_args, z_latent):
                 s = state._replace(z_latent=z_latent)
-                total_energy, new_s = node_class.forward(
-                    params, input_args, s, node_info
-                )
+                new_s = node_class.forward(params, input_args, s, node_info)
+                # Sum the per-sample energy over the batch dimension to the
+                # scalar differentiated by autodiff
+                total_energy = jnp.sum(new_s.energy)
                 return total_energy, new_s
 
             (total_energy, new_state), (input_grads, self_grad) = jax.value_and_grad(
@@ -527,6 +533,10 @@ class NodeBase(ABC):
         """
         Forward pass with autodiff: computes the node's local energy gradient w.r.t. weights.
         Called in the learning phase of predictive coding.
+
+        Sums the per-sample ``state.energy`` (shape (batch,)) over the batch
+        dimension to the scalar differentiated by ``jax.value_and_grad``
+        w.r.t. params.
 
         Override this method to implement explicit weight gradient computation
         or apply node-specific post-processing (e.g., LayerNorm compensation).
@@ -548,9 +558,16 @@ class NodeBase(ABC):
         """
         node_class = node_info.node_class
 
+        def energy_fn(p):
+            new_s = node_class.forward(p, inputs, state, node_info)
+            # Sum the per-sample energy over the batch dimension to the
+            # scalar differentiated by autodiff
+            total_energy = jnp.sum(new_s.energy)
+            return total_energy, new_s
+
         (total_energy, new_state), params_grad = jax.value_and_grad(
-            node_class.forward, argnums=0, has_aux=True
-        )(params, inputs, state, node_info)
+            energy_fn, has_aux=True
+        )(params)
 
         return new_state, params_grad
 

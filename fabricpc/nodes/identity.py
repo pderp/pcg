@@ -115,7 +115,7 @@ class IdentityNode(NodeBase):
         inputs: Dict[str, jnp.ndarray],
         state: NodeState,
         node_info: NodeInfo,
-    ) -> Tuple[jax.Array, NodeState]:
+    ) -> NodeState:
         """
         Identity forward pass: sum inputs and pass through.
 
@@ -129,7 +129,7 @@ class IdentityNode(NodeBase):
             node_info: NodeInfo object
 
         Returns:
-            Tuple of (total_energy, updated NodeState)
+            NodeState
         """
         # Sum all inputs
         z_mu = None
@@ -143,15 +143,11 @@ class IdentityNode(NodeBase):
             z_mu * node_info.node_config["scale"]
         )  # Apply fixed scaling factor (default is 1.0)
 
-        # For identity node, pre_activation equals z_mu (no activation transform)
-        pre_activation = z_mu
-
         # Compute prediction error
         error = state.z_latent - z_mu
 
         # Update node state
         state = state._replace(
-            pre_activation=pre_activation,
             z_mu=z_mu,
             error=error,
         )
@@ -160,5 +156,4 @@ class IdentityNode(NodeBase):
         node_class = node_info.node_class
         state = node_class.energy_functional(state, node_info)
 
-        total_energy = jnp.sum(state.energy)
-        return total_energy, state
+        return state

@@ -306,7 +306,6 @@ class TestForwardMethods:
                 z_mu=jnp.zeros(full_shape),
                 error=jnp.zeros(full_shape),
                 energy=jnp.zeros((batch_size,)),
-                pre_activation=jnp.zeros(full_shape),
             )
 
         state = GraphState(nodes=nodes, batch_size=batch_size)
@@ -480,7 +479,6 @@ class TestIdentityNode:
             z_mu=jnp.zeros(full_shape),
             error=jnp.zeros(full_shape),
             energy=jnp.zeros((batch_size,)),
-            pre_activation=jnp.zeros(full_shape),
             latent_grad=jnp.zeros(full_shape),
         )
         node_info = NodeInfo(
@@ -506,7 +504,7 @@ class TestIdentityNode:
         )
         params = NodeParams(weights={}, biases={})
 
-        _, new_state = IdentityNode.forward(params, inputs, state, node_info)
+        new_state = IdentityNode.forward(params, inputs, state, node_info)
 
         expected = sum(inputs.values())
         np.testing.assert_allclose(new_state.z_mu, expected, rtol=1e-5)
