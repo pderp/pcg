@@ -73,6 +73,18 @@ class muPCNetwork(nn.Module):
             energy = energy + 0.5 * (eps ** 2).sum()
         return energy
 
+    def _recompute_errors(self, y_target):
+        pred_1 = self.a_1 * torch.nn.functional.linear(self.states[0], self.W_in, self.b_in)
+        pred_1 = torch.relu(pred_1)
+        self.errors[1] = self.states[1] - pred_1
+        for i, block in enumerate(self.blocks):
+            pred = block(self.states[1 + i])
+            self.errors[2 + i] = self.states[2 + i] - pred
+        pred_out = torch.nn.functional.linear(self.states[-2], self.W_out, self.b_out)
+        if y_target is not None:
+            self.states[-1] = y_target.clone()
+        self.errors[-1] = self.states[-1] - pred_out
+
     def pc_inference_step(self, x, y_target, lr=0.1):
         pred_1 = self.a_1 * torch.nn.functional.linear(self.states[0], self.W_in, self.b_in)
         pred_1 = torch.relu(pred_1)
@@ -92,9 +104,12 @@ class muPCNetwork(nn.Module):
                     block_idx = i - 1
                     block = self.blocks[block_idx]
                     grad = grad - block.a_ell * torch.nn.functional.linear(self.errors[i + 1], block.W.t())
+                else:
+                    grad = grad - torch.nn.functional.linear(self.errors[-1], self.W_out.t())
                 mask = (self.states[i] > 0).float()
                 grad = grad * mask
                 self.states[i] = self.states[i] - lr * grad
+        self._recompute_errors(y_target)
         return self.compute_energy()
 
     def pc_weight_update(self, lr=0.001):
