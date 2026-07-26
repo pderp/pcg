@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nl
+import torch.nn as nn
 import math
 
 class PCResidualBlock(nn.Module):
@@ -32,11 +32,11 @@ class muPCNetwork(nn.Module):
         self.a_hidden = 1.0 / math.sqrt(hidden_width * num_blocks)
         self.a_L = 1.0 / hidden_width
         std_in = math.sqrt(2.0 / input_dim)
-        self.W_in = nn.Parameter(torch.randhidden_width, input_dim) * std_in)
+        self.W_in = nn.Parameter(torch.rand(hidden_width, input_dim) * std_in)
         self.b_in = nn.Parameter(torch.zeros(hidden_width))
         self.blocks = nn.ModuleList([PCResidualBlock(hidden_width, hidden_width, self.a_hidden) for _ in range(num_blocks)])
         std_out = math.sqrt(2.0 / hidden_width)
-        self.W_out = nn.Parameter(torch.randhoutput_dim, hidden_width) * std_out)
+        self.W_out = nn.Parameter(torch.rand(output_dim, hidden_width) * std_out)
         self.b_out = nn.Parameter(torch.zeros(output_dim))
         self.states = None
         self.errors = None
@@ -104,7 +104,7 @@ class muPCNetwork(nn.Module):
             self.W_in += lr * dW_in
             self.b_in += lr * self.errors[1].mean(dim=0)
             for i, block in enumerate(self.blocks):
-                dW:= block.a_ell * torch.mm(self.errors[2 + i].t(), self.states[1 + i]) / batch_size
+                dW = block.a_ell * torch.mm(self.errors[2 + i].t(), self.states[1 + i]) / batch_size
                 block.W += lr * dW
                 block.b += lr * self.errors[2 + i].mean(dim=0)
             dW_out = torch.mm(self.errors[-1].t(), self.states[-2]) / batch_size
