@@ -1,117 +1,83 @@
-# FabricPC
+# PCG - FabricPC Predictive Coding Experiments
 
-**State-of-the-art predictive coding, made easy.**
+External nodes and experiments for [FabricPC](https://github.com/pderp/fabricpc) predictive coding networks.
 
-FabricPC is an easy-to-use, high-performance open-source Python library for building and training predictive coding networks. It is designed to get researchers from idea to running experiment as fast as possible, eliminating algorithm boilerplate. A single directed edge between nodes is all that's needed to define a connection. Local derivatives are built in, following graph topology. The framework handles inference and learning dynamics automatically for whatever you write in a node's `forward()` method.
+## Setup
 
-Built on JAX for GPU and multi-GPU acceleration with local (node-level) automatic differentiation.
-
-## What It Does
-
-FabricPC supports arbitrary graph topologies: feedforward, recurrent, skip connections, and cyclic architectures. Heterogeneous components such as linear, convolutional, and pooling nodes, transformer blocks, and Storkey-Hopfield associative memory coexist within the same energy-minimization graph. The same graph topology can be trained by predictive coding (`train_pcn`) or by backpropagation (`train_backprop`), so controlled PC-vs-backprop comparisons reuse one model definition instead of two. See `examples/PC_backprop_compare.py`.
-
-Internally, everything is organized around three abstractions: nodes (state and computation), edges (connections between nodes), and updates (inference and learning algorithms).
-
-## Installation
-
-Clone this repo and `cd` into the project directory.
-
-Create a virtual environment with Python 3.10–3.13. (The optional Aim experiment tracker in `[viz]`/`[all]` is Linux/macOS only and supports Python ≤3.12; on Windows or Python 3.13 it is skipped automatically and everything else installs normally.)
-
-**Platform:** GPU acceleration requires **Linux** (x86_64 or aarch64) — JAX publishes CUDA wheels for Linux only. On native Windows or macOS, install CPU-only; for GPU on Windows use WSL2 (JAX marks WSL2 GPU support experimental).
-```bash
-# Verify your CUDA version
-nvidia-smi
-```
-
-One command installs FabricPC, all optional deps, and a version-matched JAX backend. Pick the line that matches your platform:
+### 1. Create a virtual environment
 
 ```bash
-pip install -U -e ".[all,cuda13]"   # GPU, CUDA 13
-pip install -U -e ".[all,cuda12]"   # GPU, CUDA 12
-pip install -U -e ".[all]"          # CPU only
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
 ```
 
-See [`docs/user_guides/01_installation.md`](docs/user_guides/01_installation.md) for details. Then set up hooks and run an example:
+### 2. Clone FabricPC
 
 ```bash
-# Install pre-commit hooks for code quality
-pre-commit install
-
-# Run an example
-python examples/mnist_demo.py
+git clone https://github.com/pderp/fabricpc.git
+cd fabricpc
+pip install -e ".[all]"
+cd ..
 ```
 
-## Build a Model
+**Backend selection:** The `[all]` extra installs dev, tfds, experiments, and viz dependencies.
+For GPU support, append a backend extra, e.g. `pip install -e ".[all,cuda12]"` or `pip install -e ".[all,cuda13]"`.
+For CPU-only, use `pip install -e ".[all,cpu]"`.
 
-Define the graph. Initialize the parameters. Start experimenting.
+### 3. Clone this repo
 
-```python
-from jax_setup import set_jax_flags_before_importing_jax
-set_jax_flags_before_importing_jax()
-
-import jax
-from fabricpc.nodes import Linear
-from fabricpc.core.topology import Edge
-from fabricpc.graph_assembly import TaskMap, graph
-from fabricpc.graph_initialization import initialize_params
-from fabricpc.core.inference import InferenceSGD
-
-layer1 = Linear(shape=(784,), name="input")
-layer2 = Linear(shape=(256,), name="hidden")
-layer3 = Linear(shape=(10,), name="output")
-
-structure = graph(
-    nodes=[layer1, layer2, layer3],
-    edges=[Edge(source=layer1, target=layer2.slot("in")),
-           Edge(source=layer2, target=layer3.slot("in"))],
-    task_map=TaskMap(x=layer1, y=layer3),
-    inference=InferenceSGD(eta_infer=0.05, infer_steps=20),
-)
-
-rng_key = jax.random.PRNGKey(0)
-params = initialize_params(structure, rng_key)
+```bash
+git clone https://github.com/pderp/pcg.git
+cd pcg
+pip install -e .
 ```
 
-## Demos
+### 4. Run tests
 
-The [`examples`](examples/) folder includes working demonstrations across image classification, sequence modeling, depth scaling (`examples/scaling/`), associative memory, and architectural probes. Start with [`mnist_demo.py`](examples/mnist_demo.py) (over 98% accuracy on MNIST) and explore from there:
+```bash
+pytest tests/ -v
+```
 
-- [`mnist_conv_demo.py`](examples/mnist_conv_demo.py) — convolutional MNIST classifier with `ConvNode` and `MaxPool`
-- [`resnet18_cifar10_demo.py`](examples/resnet18_cifar10_demo.py) — ResNet-18 as a PC graph, with global average pooling
-- [`transformer_v2_demo.py`](examples/transformer_v2_demo.py) — character- or BPE-level language modeling with text generation
-- [`transformer_tuning.py`](examples/transformer_tuning.py) — two-phase hyperparameter search minimizing validation perplexity
+## Full Dependency List
 
-## Documentation
+FabricPC (`pip install -e ".[all]"`) installs:
 
-User guides, API reference, and tutorials live in [`docs/user_guides`](docs/user_guides/00_index.md). Development plans and technical design documents are in [`docs/dev_plans`](docs/dev_plans/).
+**Core:**
+- `jax`, `jaxlib`
+- `optax>=0.1.7`
+- `orbax-checkpoint>=0.4.0`
+- `flax>=0.7.5`
+- `chex>=0.1.84`
+- `jaxtyping>=0.2.23`
+- `numpy>=1.24.0`
+- `tqdm>=4.65.0`
+- `optuna`
 
-## Extending FabricPC
+**Dev:**
+- `pytest>=7.0.0`, `hypothesis>=6.0.0`
+- `black[colorama]==26.1.0`, `ruff==0.15.19`, `mypy>=1.0.0`
+- `pre-commit>=3.0.0`
 
-### Custom Nodes
+**TFDS:**
+- `tensorflow-datasets>=4.9.0`, `tensorflow>=2.15.0`
+- `importlib_resources`, `tokenizers>=0.15.0`
 
-Create custom node types by subclassing `NodeBase`. Implement the `get_slots()`, `initialize_params()`, and `forward()` methods. Nodes have a single output. Slots define incoming connections and are referenced in edges when building the graph.
+**Experiments:**
+- `scipy>=1.10.0`
 
-See [`docs/user_guides/06_custom_nodes.md`](docs/user_guides/06_custom_nodes.md) for the node contract and a Conv2D teaching example (the production node is `fabricpc.nodes.ConvNode`).
+**Viz:**
+- `plotly>=5.0.0`, `kaleido>=0.2.1`, `pandas>=2.0.0`
+- `aim>=3.0.0` (excluded on Windows / Python 3.13+)
 
-## Contributing
+## Structure
 
-Contributions are welcome! Please open issues or pull requests on the GitHub repository.
-- Develop on a branch using the convention `username/your_feature_name`.
-- Demos must match baseline results, or explain any divergence.
-- The test suite must pass.
-- Write unit tests and docstrings for new code.
-- Use the pre-commit hooks for PEP8 style and code quality.
-- Rebase before opening PR.
+- `src/pcg_nodes/` - External FabricPC nodes (LinearResidual)
+- `tests/` - Unit tests
+- `docs/dev-plans/` - Development plans
 
-This is a research-first project.
-- APIs may change frequently until the v1.0 release.
-- Any breaking changes are documented in the changelog.
+## Requirements
 
-## Team
-
-FabricPC is actively maintained by SingularityNET as part of the Artificial Superintelligence Alliance. Project lead: Dr. Matthew Behrend.
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
+- Python 3.10+
+- JAX
+- FabricPC
