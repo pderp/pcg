@@ -1,1 +1,1 @@
-# 2nd Stage Development Plan: FabricPC Implementation
+# 2nd Stage Development Plan: GPU-Efficient FabricPC Implementation
