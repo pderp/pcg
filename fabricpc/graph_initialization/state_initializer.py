@@ -132,8 +132,14 @@ class GlobalStateInit(StateInitBase):
         for node_name, node in structure.nodes.items():
             node_info = node.node_info
             shape = (batch_size, *node_info.shape)
+            init_shape = (1, *node_info.shape)
 
+<<<<<<< HEAD
             z_latent = jnp.broadcast_to(initialize(rng_key_map[node_name], (1,)+tuple(node_info.shape), global_init_config), shape)
+=======
+            z_latent = initialize(rng_key_map[node_name], init_shape, global_init_config)
+            z_latent = jnp.broadcast_to(z_latent, shape)
+>>>>>>> de56680 (Fix batch consistency: init latents with shape (1, *node_info.shape) then broadcast to (batch_size, *node_info.shape))
             # Only z_latent tracks the clamp's dtype, so callers can pass integer
             # indices through to a consuming node (e.g. EmbeddingNode). The
             # remaining NodeState fields stay float — they are computed in float
@@ -186,9 +192,15 @@ class NodeDistributionStateInit(StateInitBase):
         for node_name, node in structure.nodes.items():
             node_info = node.node_info
             shape = (batch_size, *node_info.shape)
+            init_shape = (1, *node_info.shape)
 
             latent_init = node_info.latent_init
+<<<<<<< HEAD
             z_latent = jnp.broadcast_to(initialize(rng_key_map[node_name], (1,)+tuple(node_info.shape), latent_init), shape)
+=======
+            z_latent = initialize(rng_key_map[node_name], init_shape, latent_init)
+            z_latent = jnp.broadcast_to(z_latent, shape)
+>>>>>>> de56680 (Fix batch consistency: init latents with shape (1, *node_info.shape) then broadcast to (batch_size, *node_info.shape))
             z_latent_dtype = (
                 jnp.asarray(clamps[node_name]).dtype
                 if node_name in clamps
@@ -245,9 +257,15 @@ class FeedforwardStateInit(StateInitBase):
         for node_name, node in structure.nodes.items():
             node_info = node.node_info
             shape = (batch_size, *node_info.shape)
+            init_shape = (1, *node_info.shape)
 
             latent_init = node_info.latent_init
+<<<<<<< HEAD
             z_latent = jnp.broadcast_to(initialize(rng_key_map[node_name], (1,)+tuple(node_info.shape), latent_init), shape)
+=======
+            z_latent = initialize(rng_key_map[node_name], init_shape, latent_init)
+            z_latent = jnp.broadcast_to(z_latent, shape)
+>>>>>>> de56680 (Fix batch consistency: init latents with shape (1, *node_info.shape) then broadcast to (batch_size, *node_info.shape))
             z_latent_dtype = (
                 jnp.asarray(clamps[node_name]).dtype
                 if node_name in clamps
